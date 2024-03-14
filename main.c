@@ -1,10 +1,12 @@
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <termios.h>
 #include <unistd.h>
 
 void enableRawMode(void);
+void deathToMachine (char const* err_message);
 int main(void)
 {
 	enableRawMode();
@@ -15,7 +17,8 @@ int main(void)
 	while (1)
 	{
 	  char c = '\0';
-	  read(STDIN_FILENO, &c, 1);
+	  if (read(STDIN_FILENO, &c, 1) == -1 && errno != EAGAIN)
+	  { deathToMachine("read"); }
 	  // print every input characters ascii value
 	  if (iscntrl(c))
 	  { printf("%d\r\n", c); }
@@ -29,13 +32,23 @@ int main(void)
 
 struct termios orig_termios;
 
+void deathToMachine (char const* err_message)
+{
+	perror(err_message);
+	exit(1);
+}
+
 void disableRawMode(void)
-{ tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios); }
+{
+	if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios) == -1)
+	{ deathToMachine("tcsettattr"); }
+}
 
 void enableRawMode(void)
 {
 	//  Make copy of terminals original status
-	tcgetattr(STDIN_FILENO, &orig_termios);
+	if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios) == -1)
+	{ deathToMachine("tcsettattr"); }
 	//  Restore terminal status at program exit
 	atexit(disableRawMode);
 
@@ -54,5 +67,6 @@ void enableRawMode(void)
 	raw.c_cc[VMIN] = 0;
 	raw.c_cc[VTIME] = 1;
 
-	tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+	if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1)
+	{ deathToMachine("tcsettattr"); }
 }
