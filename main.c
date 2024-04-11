@@ -1,14 +1,20 @@
+#define _DEFAUL_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
 
 void enableRawMode(void);
 void ted_init(void);
+void ted_open(char const filename[]);
 void ted_refreshScreen(void);
 void ted_processKeypress(void);
 
@@ -29,10 +35,12 @@ enum ted_Key
 	PAGE_DOWN
 };
 
-int main(void)
+int main(int argc, char* argv[])
 {
 	enableRawMode();
 	ted_init();
+	if (argc >= 2)
+	{ ted_open(argv[1]); }
 
 	//  Read 1 byte of user input
 	//  terminal will not output user input and will exit on 'q' keypress
@@ -89,11 +97,19 @@ void ab_append (struct abuf* ab, char const* s, int len)
 void ab_free (struct abuf* ab)
 { free(ab->b); }
 
+typedef struct
+{
+	int size;
+	char* charas;
+}  erow;
+
 struct ted_Config
 {
 	int cx, cy;
-	int screenrows;
-	int screencols;
+	int screenRows;
+	int screenCols;
+	int numRows;
+	erow *row;
 	struct termios orig_termios;
 };
 struct ted_Config E;
@@ -102,8 +118,45 @@ void ted_init(void)
 {
 	E.cx = 0;
 	E.cy = 0;
-	if (getWindowSize (&E.screenrows, &E.screencols) == -1)
+	E.numRows = 0;
+	E.row = NULL;
+
+	if (getWindowSize (&E.screenRows, &E.screenCols) == -1)
 	{ deathToMachine("getWindowSize"); }
+}
+
+void ted_appendRow (char const* s, size_t len);
+void ted_open(char const filename[])
+{
+	FILE*const fp = fopen(filename, "r");
+	if (fp == NULL){ deathToMachine("fopen"); }
+
+	char* line = NULL;
+	size_t linecap = 0;
+	ssize_t linelen;
+	linelen = getline(&line, &linecap, fp);
+	while ((linelen = getline(&line, &linecap, fp)) != -1)
+	{
+	  while (linelen > 0 && (line[linelen-1] == '\n' ||
+	                         line[linelen-1] == '\r'))
+	  { linelen--; }
+	  ted_appendRow (line, linelen);
+	}
+
+	free(line);
+	fclose(fp);
+}
+
+void ted_appendRow (char const* s, size_t len)
+{
+	E.row = realloc (E.row, sizeof(erow)*(E.numRows+1));
+
+	int at = E.numRows;
+	E.row[at].size = len;
+	E.row[at].charas = malloc(len+1);
+	memcpy (E.row[at].charas, s, len);
+	E.row[at].charas[len] = '\0';
+	E.numRows++;
 }
 
 int ted_readKey(void)
@@ -173,7 +226,7 @@ void ted_moveCursor (int key)
 	    { E.cx--; }
 	    break;
 	  case ARROW_RIGHT:
-	    if (E.cx != E.screencols - 1)
+	    if (E.cx != E.screenCols - 1)
 	    { E.cx++; }
 	    break;
 	  case ARROW_UP:
@@ -181,7 +234,7 @@ void ted_moveCursor (int key)
 	    { E.cy--; }
 	    break;
 	  case ARROW_DOWN:
-	    if (E.cy != E.screenrows - 1)
+	    if (E.cy != E.screenRows - 1)
 	    { E.cy++; }
 	    break;
 	}
@@ -203,13 +256,13 @@ void ted_processKeypress(void)
 	    E.cx = 0;
 	    break;
 	  case END_KEY:
-	    E.cx = E.screencols - 1;
+	    E.cx = E.screenCols - 1;
 	    break;
 
 	  case PAGE_UP:
 	  case PAGE_DOWN:
 	    {
-	      int times = E.screenrows;
+	      int times = E.screenRows;
 	      while (times--)
 	      { ted_moveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN); }
 	    }
@@ -229,28 +282,37 @@ void ted_processKeypress(void)
 void ted_drawRows(struct abuf* ab)
 {
 	int y = 0;
-	for (; y < E.screenrows; y++)
+	for (; y < E.screenRows; y++)
 	{
-	  if (y == E.screenrows/3)
+	  if (y >= E.numRows)
 	  {
-	    char welcome[80];
-	    int welcomelen = snprintf(welcome, sizeof(welcome),
-	      "Kilo editor -- version %s", KILO_VERSION);
-	    if (welcomelen > E.screencols)
-	    { welcomelen = E.screencols; }
-	    int padding = (E.screencols - welcomelen) / 2;
-	    if (padding)
+	    if (E.numRows == 0 && y == E.screenRows/3)
 	    {
-	      ab_append(ab, "~", 1);
-	      padding--;
+	      char welcome[80];
+	      int welcomelen = snprintf(welcome, sizeof(welcome),
+	        "Kilo editor -- version %s", KILO_VERSION);
+	      if (welcomelen > E.screenCols)
+	      { welcomelen = E.screenCols; }
+	      int padding = (E.screenCols - welcomelen) / 2;
+	      if (padding)
+	      {
+	        ab_append(ab, "~", 1);
+	        padding--;
+	      }
+	      while(padding--){ ab_append(ab, " ", 1); }
+	      ab_append(ab, welcome, welcomelen);
 	    }
-	    while(padding--){ ab_append(ab, " ", 1); }
-	    ab_append(ab, welcome, welcomelen);
+	    else{ ab_append(ab, "~", 1); }
 	  }
-	  else{ ab_append(ab, "~", 1); }
+	  else
+	  {
+	    int len = E.row[y].size;
+	    if (len > E.screenCols){ len = E.screenCols; }
+	    ab_append(ab, E.row[y].charas, len);
+	  }
 
 	  ab_append(ab, "\x1b[K", 3);
-	  if (y < E.screenrows - 1)
+	  if (y < E.screenRows - 1)
 	  { ab_append(ab, "\r\n", 2); }
 	}
 }
